@@ -1,0 +1,5 @@
+dist/
+*.qcow2
+*.img
+*.raw
+.DS_Store
