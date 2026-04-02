@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
-	"strings"
 )
 
 // PartitionTarget maps a partition number (1-based) to a destination device or file.
@@ -118,7 +117,7 @@ func WritePartitions(chain []*QCOWLayer, targets []PartitionTarget) error {
 			return fmt.Errorf("open %s: %v", target.Device, err)
 		}
 
-		fmt.Printf("writing partition %d -> %s (%d bytes)\n", target.Num, target.Device, info.SizeBytes)
+		fmt.Printf("qflash: partition %d -> %s (%s)\n", target.Num, target.Device, HumanSize(info.SizeBytes))
 		const chunkSize = uint64(4 << 20)
 		written := uint64(0)
 		for written < info.SizeBytes {
@@ -136,15 +135,9 @@ func WritePartitions(chain []*QCOWLayer, targets []PartitionTarget) error {
 				return fmt.Errorf("partition %d write to %s: %v", target.Num, target.Device, err)
 			}
 			written += toRead
-			pct := written * 100 / info.SizeBytes
-			filled := int(pct * 50 / 100)
-			fmt.Printf("\r[%s%s] %3d%%",
-				strings.Repeat(".", filled),
-				strings.Repeat(" ", 50-filled),
-				pct)
 		}
-		fmt.Println()
 		dst.Close()
+		fmt.Printf("qflash: partition %d done\n", target.Num)
 	}
 	return nil
 }
