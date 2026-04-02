@@ -4,10 +4,8 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 // WriteToDevice streams the virtual disk contents through the layer chain to
@@ -34,35 +32,7 @@ func WriteToDevice(chain []*QCOWLayer, dst *os.File) error {
 		mu       sync.Mutex
 		firstErr error
 	)
-	var written, zeros, completed atomic.Int64
-
-	// Progress bar: updates in place using \r, 50 chars wide.
-	printProgress := func(done int64) {
-		pct := done * 100 / int64(totalClusters)
-		filled := int(pct * 50 / 100)
-		fmt.Printf("\r[%s%s] %3d%%",
-			strings.Repeat(".", filled),
-			strings.Repeat(" ", 50-filled),
-			pct)
-	}
-	stop := make(chan struct{})
-	var progressWg sync.WaitGroup
-	progressWg.Add(1)
-	go func() {
-		defer progressWg.Done()
-		ticker := time.NewTicker(200 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				printProgress(completed.Load())
-			case <-stop:
-				printProgress(completed.Load())
-				fmt.Println()
-				return
-			}
-		}
-	}()
+	var written, zeros atomic.Int64
 
 	var wg sync.WaitGroup
 	for range numWorkers {
@@ -79,7 +49,6 @@ func WriteToDevice(chain []*QCOWLayer, dst *os.File) error {
 						firstErr = fmt.Errorf("cluster %d (offset 0x%x): %v", clusterNum, virtualOffset, err)
 					}
 					mu.Unlock()
-					completed.Add(1)
 					continue
 				}
 
@@ -95,7 +64,6 @@ func WriteToDevice(chain []*QCOWLayer, dst *os.File) error {
 						firstErr = fmt.Errorf("error writing cluster %d: %v", clusterNum, err)
 					}
 					mu.Unlock()
-					completed.Add(1)
 					continue
 				}
 
@@ -104,7 +72,6 @@ func WriteToDevice(chain []*QCOWLayer, dst *os.File) error {
 				} else {
 					written.Add(1)
 				}
-				completed.Add(1)
 			}
 		}()
 	}
@@ -120,8 +87,6 @@ func WriteToDevice(chain []*QCOWLayer, dst *os.File) error {
 	}
 	close(jobs)
 	wg.Wait()
-	close(stop)
-	progressWg.Wait()
 
 	if firstErr != nil {
 		return firstErr
