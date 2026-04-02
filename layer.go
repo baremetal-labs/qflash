@@ -44,7 +44,11 @@ func OpenLayerChain(src *os.File) ([]*QCOWLayer, error) {
 
 	if header.BackingFileOffset != 0 && header.BackingFileSize != 0 {
 		nameBuf := make([]byte, header.BackingFileSize)
-		if _, err := src.ReadAt(nameBuf, int64(header.BackingFileOffset)); err != nil {
+		off, err := safeOffset(header.BackingFileOffset)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := src.ReadAt(nameBuf, off); err != nil {
 			return nil, fmt.Errorf("reading backing file name: %v", err)
 		}
 		backingPath := string(nameBuf)
@@ -52,14 +56,14 @@ func OpenLayerChain(src *os.File) ([]*QCOWLayer, error) {
 			backingPath = filepath.Join(filepath.Dir(src.Name()), backingPath)
 		}
 
-		bf, err := os.Open(backingPath)
+		bf, err := os.Open(backingPath) // #nosec G304 — backing file path is embedded in the qcow2 image by design
 		if err != nil {
 			return nil, fmt.Errorf("opening backing file %q: %v", backingPath, err)
 		}
 
 		rest, err := OpenLayerChain(bf)
 		if err != nil {
-			bf.Close()
+			_ = bf.Close()
 			return nil, fmt.Errorf("backing file %q: %v", backingPath, err)
 		}
 		chain = append(chain, rest...)
@@ -70,7 +74,11 @@ func OpenLayerChain(src *os.File) ([]*QCOWLayer, error) {
 
 func readL1Table(src *os.File, header *QCOWHeader) ([]L1Entry, error) {
 	l1Raw := make([]byte, uint64(header.L1Size)*8)
-	_, err := src.ReadAt(l1Raw, int64(header.L1TableOffset))
+	off, err := safeOffset(header.L1TableOffset)
+	if err != nil {
+		return nil, err
+	}
+	_, err = src.ReadAt(l1Raw, off)
 	if err != nil {
 		return nil, fmt.Errorf("error reading L1 table: %v", err)
 	}
@@ -85,12 +93,16 @@ func readL1Table(src *os.File, header *QCOWHeader) ([]L1Entry, error) {
 
 func readL2Table(src *os.File, header *QCOWHeader, l2ByteOffset uint64) ([]L2Entry, error) {
 	l2Raw := make([]byte, header.ClusterSize)
-	_, err := src.ReadAt(l2Raw, int64(l2ByteOffset))
+	off, err := safeOffset(l2ByteOffset)
+	if err != nil {
+		return nil, err
+	}
+	_, err = src.ReadAt(l2Raw, off)
 	if err != nil {
 		return nil, fmt.Errorf("error reading L2 table at 0x%x: %v", l2ByteOffset, err)
 	}
 
-	l2Entries := int(header.ClusterSize / 8)
+	l2Entries := int(header.ClusterSize / 8) // #nosec G115 — cluster size is at most 2MB, well within int range
 	entries := make([]L2Entry, l2Entries)
 	for i := 0; i < l2Entries; i++ {
 		raw := binary.BigEndian.Uint64(l2Raw[i*8 : (i+1)*8])
@@ -126,7 +138,11 @@ func readCompressedCluster(src *os.File, header *QCOWHeader, l2 L2Entry) ([]byte
 	readSize := (l2.AdditionalSectors + 1) * 512
 
 	raw := make([]byte, readSize)
-	n, err := src.ReadAt(raw, int64(alignedOffset))
+	off, err := safeOffset(alignedOffset)
+	if err != nil {
+		return nil, err
+	}
+	n, err := src.ReadAt(raw, off)
 	if err != nil && err != io.EOF {
 		return nil, fmt.Errorf("error reading compressed data at offset 0x%x: %v", alignedOffset, err)
 	}
@@ -147,7 +163,7 @@ func readCompressedCluster(src *os.File, header *QCOWHeader, l2 L2Entry) ([]byte
 	case 0: // raw deflate — no zlib header; create a fresh reader per cluster
 		r := flate.NewReader(bytes.NewReader(compressed))
 		_, err = io.ReadFull(r, out)
-		r.Close()
+		_ = r.Close()
 		if err != nil && err != io.ErrUnexpectedEOF {
 			n := 32
 			if len(compressed) < n {
@@ -231,7 +247,11 @@ func readVirtualCluster(layer *QCOWLayer, virtualOffset uint64) ([]byte, uint32,
 
 	default:
 		buf := make([]byte, clusterSize)
-		_, err := layer.File.ReadAt(buf, int64(l2Entry.HostClusterOffset))
+		off, err := safeOffset(l2Entry.HostClusterOffset)
+		if err != nil {
+			return nil, 0, err
+		}
+		_, err = layer.File.ReadAt(buf, off)
 		if err != nil {
 			return nil, 0, fmt.Errorf("error reading host cluster at 0x%x: %v", l2Entry.HostClusterOffset, err)
 		}
@@ -247,7 +267,11 @@ func readVirtualClusterExtL2(layer *QCOWLayer, l2TableOffset, l2Index uint64) ([
 	clusterSize := header.ClusterSize
 
 	raw := make([]byte, 16)
-	if _, err := layer.File.ReadAt(raw, int64(l2TableOffset+l2Index*16)); err != nil {
+	off, err := safeOffset(l2TableOffset + l2Index*16)
+	if err != nil {
+		return nil, 0, err
+	}
+	if _, err := layer.File.ReadAt(raw, off); err != nil {
 		return nil, 0, fmt.Errorf("reading ext L2 entry: %v", err)
 	}
 	word0 := binary.BigEndian.Uint64(raw[0:8])
@@ -261,8 +285,8 @@ func readVirtualClusterExtL2(layer *QCOWLayer, l2TableOffset, l2Index uint64) ([
 	}
 
 	hostOffset := word0 & 0x00FFFFFFFFFFFE00
-	allocBits := uint32(word1)      // bits  0-31: subcluster i is allocated
-	zeroBits := uint32(word1 >> 32) // bits 32-63: subcluster i reads as zero
+	allocBits := uint32(word1)      // #nosec G115 — intentionally extracting low 32 bits
+	zeroBits := uint32(word1 >> 32) // #nosec G115 — intentionally extracting high 32 bits
 
 	// filledMask: subclusters handled by this layer (allocated OR zero-flagged).
 	filledMask := allocBits | zeroBits
@@ -277,7 +301,11 @@ func readVirtualClusterExtL2(layer *QCOWLayer, l2TableOffset, l2Index uint64) ([
 
 	if hostOffset != 0 && allocBits != 0 {
 		hostData := make([]byte, clusterSize)
-		if _, err := layer.File.ReadAt(hostData, int64(hostOffset)); err != nil {
+		hostOff, err := safeOffset(hostOffset)
+		if err != nil {
+			return nil, 0, err
+		}
+		if _, err := layer.File.ReadAt(hostData, hostOff); err != nil {
 			return nil, 0, fmt.Errorf("reading ext L2 host cluster at 0x%x: %v", hostOffset, err)
 		}
 		for i := uint32(0); i < 32; i++ {

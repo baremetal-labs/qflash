@@ -37,7 +37,7 @@ func main() {
 	}
 	defer func() {
 		for _, l := range chain[1:] {
-			l.File.Close()
+			_ = l.File.Close()
 		}
 	}()
 
@@ -93,7 +93,7 @@ func main() {
 	}
 
 	if *dstFile != "" {
-		dst, err := os.OpenFile(*dstFile, os.O_WRONLY|os.O_CREATE, 0644)
+		dst, err := os.OpenFile(*dstFile, os.O_WRONLY|os.O_CREATE, 0600)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "qflash: open destination: %v\n", err)
 			os.Exit(1)

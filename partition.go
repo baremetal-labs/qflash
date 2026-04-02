@@ -112,7 +112,7 @@ func WritePartitions(chain []*QCOWLayer, targets []PartitionTarget) error {
 			return fmt.Errorf("partition %d not found in image", target.Num)
 		}
 
-		dst, err := os.OpenFile(target.Device, os.O_WRONLY|os.O_CREATE, 0644)
+		dst, err := os.OpenFile(target.Device, os.O_WRONLY|os.O_CREATE, 0600)
 		if err != nil {
 			return fmt.Errorf("open %s: %v", target.Device, err)
 		}
@@ -127,16 +127,18 @@ func WritePartitions(chain []*QCOWLayer, targets []PartitionTarget) error {
 			}
 			data, err := ReadVirtualBytes(chain, info.StartByte+written, toRead)
 			if err != nil {
-				dst.Close()
+				_ = dst.Close()
 				return fmt.Errorf("partition %d read at +%d: %v", target.Num, written, err)
 			}
 			if _, err := dst.WriteAt(data, int64(written)); err != nil {
-				dst.Close()
+				_ = dst.Close()
 				return fmt.Errorf("partition %d write to %s: %v", target.Num, target.Device, err)
 			}
 			written += toRead
 		}
-		dst.Close()
+		if err := dst.Close(); err != nil {
+			return fmt.Errorf("partition %d close %s: %v", target.Num, target.Device, err)
+		}
 		fmt.Printf("qflash: partition %d done\n", target.Num)
 	}
 	return nil
