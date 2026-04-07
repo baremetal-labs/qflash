@@ -58,7 +58,17 @@ func WriteToDevice(chain []*QCOWLayer, dst *os.File) error {
 					writeLen = remaining
 				}
 
-				if _, err = dst.WriteAt(data[:writeLen], int64(virtualOffset)); err != nil {
+				dstOff, err := safeOffset(virtualOffset)
+				if err != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					mu.Unlock()
+					continue
+				}
+
+				if _, err = dst.WriteAt(data[:writeLen], dstOff); err != nil {
 					mu.Lock()
 					if firstErr == nil {
 						firstErr = fmt.Errorf("error writing cluster %d: %v", clusterNum, err)
