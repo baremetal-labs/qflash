@@ -130,7 +130,12 @@ func WritePartitions(chain []*QCOWLayer, targets []PartitionTarget) error {
 				_ = dst.Close()
 				return fmt.Errorf("partition %d read at +%d: %v", target.Num, written, err)
 			}
-			if _, err := dst.WriteAt(data, int64(written)); err != nil {
+			dstOff, err := safeOffset(written)
+			if err != nil {
+				_ = dst.Close()
+				return fmt.Errorf("partition %d: %v", target.Num, err)
+			}
+			if _, err := dst.WriteAt(data, dstOff); err != nil {
 				_ = dst.Close()
 				return fmt.Errorf("partition %d write to %s: %v", target.Num, target.Device, err)
 			}

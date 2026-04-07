@@ -306,7 +306,7 @@ func TestBackingFileChain(t *testing.T) {
 	}
 	defer overlayFile.Close()
 
-	chain, err := OpenLayerChain(overlayFile)
+	chain, err := OpenLayerChainFromFile(overlayFile)
 	if err != nil {
 		t.Fatalf("OpenLayerChain: %v", err)
 	}
