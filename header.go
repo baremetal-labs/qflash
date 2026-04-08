@@ -4,6 +4,7 @@ package qflash
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -65,11 +66,14 @@ const (
 		incompatCompression | incompatExtL2
 )
 
-func readHeader(src *os.File) (*QCOWHeader, error) {
+func readHeader(src io.ReaderAt) (*QCOWHeader, error) {
 	header := make([]byte, 112) // 104 base + 8 bytes for optional compression_type + padding
 	n, err := src.ReadAt(header, 0)
-	if err != nil && n < 104 {
-		return nil, fmt.Errorf("error reading header: %v", err)
+	if n < 104 {
+		if err != nil {
+			return nil, fmt.Errorf("error reading header: %v", err)
+		}
+		return nil, fmt.Errorf("header too short: got %d bytes, need at least 104", n)
 	}
 	header = header[:n]
 

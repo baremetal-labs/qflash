@@ -11,7 +11,7 @@ func TestWriteToDevice(t *testing.T) {
 	src := tempQCOW2(t, fill)
 	defer src.Close()
 
-	chain, err := OpenLayerChain(src)
+	chain, err := OpenLayerChainFromFile(src)
 	if err != nil {
 		t.Fatalf("OpenLayerChain: %v", err)
 	}

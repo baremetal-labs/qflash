@@ -31,6 +31,7 @@ func WriteToDevice(chain []*QCOWLayer, dst *os.File) error {
 	var (
 		mu       sync.Mutex
 		firstErr error
+		errFlag  atomic.Bool
 	)
 	var written, zeros atomic.Int64
 
@@ -45,8 +46,9 @@ func WriteToDevice(chain []*QCOWLayer, dst *os.File) error {
 				data, err := readVirtualClusterChain(chain, virtualOffset)
 				if err != nil {
 					mu.Lock()
-					if firstErr == nil {
+					if !errFlag.Load() {
 						firstErr = fmt.Errorf("cluster %d (offset 0x%x): %v", clusterNum, virtualOffset, err)
+						errFlag.Store(true)
 					}
 					mu.Unlock()
 					continue
@@ -61,8 +63,9 @@ func WriteToDevice(chain []*QCOWLayer, dst *os.File) error {
 				dstOff, err := safeOffset(virtualOffset)
 				if err != nil {
 					mu.Lock()
-					if firstErr == nil {
+					if !errFlag.Load() {
 						firstErr = err
+						errFlag.Store(true)
 					}
 					mu.Unlock()
 					continue
@@ -70,8 +73,9 @@ func WriteToDevice(chain []*QCOWLayer, dst *os.File) error {
 
 				if _, err = dst.WriteAt(data[:writeLen], dstOff); err != nil {
 					mu.Lock()
-					if firstErr == nil {
+					if !errFlag.Load() {
 						firstErr = fmt.Errorf("error writing cluster %d: %v", clusterNum, err)
+						errFlag.Store(true)
 					}
 					mu.Unlock()
 					continue
@@ -87,10 +91,7 @@ func WriteToDevice(chain []*QCOWLayer, dst *os.File) error {
 	}
 
 	for clusterNum := uint64(0); clusterNum < totalClusters; clusterNum++ {
-		mu.Lock()
-		e := firstErr
-		mu.Unlock()
-		if e != nil {
+		if errFlag.Load() {
 			break
 		}
 		jobs <- clusterNum

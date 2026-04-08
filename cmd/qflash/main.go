@@ -30,14 +30,16 @@ func main() {
 	}
 	defer src.Close()
 
-	chain, err := qflash.OpenLayerChain(src)
+	chain, err := qflash.OpenLayerChainFromFile(src)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "qflash: %v\n", err)
 		os.Exit(1)
 	}
 	defer func() {
 		for _, l := range chain[1:] {
-			_ = l.File.Close()
+			if c, ok := l.File.(interface{ Close() error }); ok {
+				_ = c.Close()
+			}
 		}
 	}()
 

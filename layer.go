@@ -15,7 +15,8 @@ import (
 
 // QCOWLayer is one image in a backing-file chain (overlay → ... → base).
 type QCOWLayer struct {
-	File    *os.File
+	File    io.ReaderAt
+	Path    string // source path, used to resolve relative backing file references
 	Header  *QCOWHeader
 	L1      []L1Entry
 	l2Cache sync.Map // key: uint64 byte offset → value: []L2Entry
@@ -23,7 +24,9 @@ type QCOWLayer struct {
 
 // OpenLayerChain opens src and recursively opens any backing files, returning
 // the full chain with the overlay first and the base image last.
-func OpenLayerChain(src *os.File) ([]*QCOWLayer, error) {
+// srcPath is used to resolve relative backing file references; pass an empty
+// string to disable backing file support (e.g. for HTTP sources).
+func OpenLayerChain(src io.ReaderAt, srcPath string) ([]*QCOWLayer, error) {
 	header, err := readHeader(src)
 	if err != nil {
 		return nil, err
@@ -39,10 +42,10 @@ func OpenLayerChain(src *os.File) ([]*QCOWLayer, error) {
 		return nil, err
 	}
 
-	layer := &QCOWLayer{File: src, Header: header, L1: l1}
+	layer := &QCOWLayer{File: src, Path: srcPath, Header: header, L1: l1}
 	chain := []*QCOWLayer{layer}
 
-	if header.BackingFileOffset != 0 && header.BackingFileSize != 0 {
+	if srcPath != "" && header.BackingFileOffset != 0 && header.BackingFileSize != 0 {
 		nameBuf := make([]byte, header.BackingFileSize)
 		off, err := safeOffset(header.BackingFileOffset)
 		if err != nil {
@@ -53,7 +56,7 @@ func OpenLayerChain(src *os.File) ([]*QCOWLayer, error) {
 		}
 		backingPath := string(nameBuf)
 		if !filepath.IsAbs(backingPath) {
-			backingPath = filepath.Join(filepath.Dir(src.Name()), backingPath)
+			backingPath = filepath.Join(filepath.Dir(srcPath), backingPath)
 		}
 
 		bf, err := os.Open(backingPath) // #nosec G304 — backing file path is embedded in the qcow2 image by design
@@ -61,7 +64,7 @@ func OpenLayerChain(src *os.File) ([]*QCOWLayer, error) {
 			return nil, fmt.Errorf("opening backing file %q: %v", backingPath, err)
 		}
 
-		rest, err := OpenLayerChain(bf)
+		rest, err := OpenLayerChain(bf, bf.Name())
 		if err != nil {
 			_ = bf.Close()
 			return nil, fmt.Errorf("backing file %q: %v", backingPath, err)
@@ -72,7 +75,12 @@ func OpenLayerChain(src *os.File) ([]*QCOWLayer, error) {
 	return chain, nil
 }
 
-func readL1Table(src *os.File, header *QCOWHeader) ([]L1Entry, error) {
+// OpenLayerChainFromFile is a convenience wrapper for local qcow2 files.
+func OpenLayerChainFromFile(f *os.File) ([]*QCOWLayer, error) {
+	return OpenLayerChain(f, f.Name())
+}
+
+func readL1Table(src io.ReaderAt, header *QCOWHeader) ([]L1Entry, error) {
 	l1Raw := make([]byte, uint64(header.L1Size)*8)
 	off, err := safeOffset(header.L1TableOffset)
 	if err != nil {
@@ -91,7 +99,7 @@ func readL1Table(src *os.File, header *QCOWHeader) ([]L1Entry, error) {
 	return l1Entries, nil
 }
 
-func readL2Table(src *os.File, header *QCOWHeader, l2ByteOffset uint64) ([]L2Entry, error) {
+func readL2Table(src io.ReaderAt, header *QCOWHeader, l2ByteOffset uint64) ([]L2Entry, error) {
 	l2Raw := make([]byte, header.ClusterSize)
 	off, err := safeOffset(l2ByteOffset)
 	if err != nil {
@@ -131,7 +139,7 @@ func (layer *QCOWLayer) getL2Table(l2ByteOffset uint64) ([]L2Entry, error) {
 // Reads are sector-aligned (matching QEMU's block layer), then the
 // compressed data slice is extracted starting at the intra-sector offset.
 // Dispatches to deflate or zstd based on header.CompressionType.
-func readCompressedCluster(src *os.File, header *QCOWHeader, l2 L2Entry) ([]byte, error) {
+func readCompressedCluster(src io.ReaderAt, header *QCOWHeader, l2 L2Entry) ([]byte, error) {
 	// Align to 512-byte sector boundary, matching QEMU's block layer reads.
 	sectorOffset := l2.CompressedOffset & 511
 	alignedOffset := l2.CompressedOffset - sectorOffset
@@ -147,12 +155,7 @@ func readCompressedCluster(src *os.File, header *QCOWHeader, l2 L2Entry) ([]byte
 		return nil, fmt.Errorf("error reading compressed data at offset 0x%x: %v", alignedOffset, err)
 	}
 	if n == 0 {
-		fi, _ := src.Stat()
-		var fileSize int64
-		if fi != nil {
-			fileSize = fi.Size()
-		}
-		return nil, fmt.Errorf("zero bytes read at compressed offset 0x%x (file size on disk: %d): initramfs file is truncated — QCOW2 too large to embed", alignedOffset, fileSize)
+		return nil, fmt.Errorf("zero bytes read at compressed offset 0x%x: source is truncated or too small", alignedOffset)
 	}
 
 	// Compressed data starts at sectorOffset within raw.
@@ -232,6 +235,9 @@ func readVirtualCluster(layer *QCOWLayer, virtualOffset uint64) ([]byte, uint32,
 		return nil, 0, err
 	}
 
+	if l2Index >= uint64(len(l2Table)) {
+		return nil, 0, fmt.Errorf("L2 index %d out of range (%d entries)", l2Index, len(l2Table))
+	}
 	l2Entry := l2Table[l2Index]
 
 	switch {
